@@ -1,0 +1,26 @@
+/* Global reset and base styles for the Dyslexia Comprehension Tool */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+/* Ensure buttons and inputs inherit font from the app shell */
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+}
