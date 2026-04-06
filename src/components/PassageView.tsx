@@ -95,18 +95,23 @@ export default function PassageView({ onWordClick }: PassageViewProps) {
   }, [genre, difficulty, getAvailablePassages, usedIds, generatingInBackground]);
 
   const handleNewPassage = useCallback(async () => {
+    console.log('[PassageView] handleNewPassage called, genre:', genre, 'difficulty:', difficulty);
     setLoading(true);
     setQuestions([]);
 
     // Try seed/extra passages first
     const picked = pickPassage();
+    console.log('[PassageView] Available seeds for', genre, difficulty, ':', getAvailablePassages().length, 'picked:', picked?.id);
     if (picked) {
-      picked.taggedWords = picked.taggedWords.length > 0 ? picked.taggedWords : tagWords(picked as any);
+      if (!picked.taggedWords || picked.taggedWords.length === 0) {
+        try {
+          picked.taggedWords = tagWords({ id: picked.id, text: picked.text, genre: picked.genre, difficulty: picked.difficulty, theme: picked.theme, paragraphs: picked.paragraphs, taggedWords: [] });
+        } catch { picked.taggedWords = []; }
+      }
       setPassage(picked);
       setQuestions(picked.questions || []);
       setUsedIds((prev) => new Set([...prev, picked.id]));
       setLoading(false);
-      // Trigger background generation if running low
       maybeGenerateInBackground();
       return;
     }
