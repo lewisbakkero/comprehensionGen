@@ -32,6 +32,8 @@ export default function PassageView({ onWordClick }: PassageViewProps) {
   const [usedIds, setUsedIds] = useState<Set<string>>(new Set());
   const [extraPassages, setExtraPassages] = useState<PassageRecord[]>([]);
   const [generatingInBackground, setGeneratingInBackground] = useState(false);
+  const [allDone, setAllDone] = useState(false);
+  const [questionsFinished, setQuestionsFinished] = useState(false);
 
   // Load preferences and used IDs from IndexedDB on mount
   useEffect(() => {
@@ -49,7 +51,7 @@ export default function PassageView({ onWordClick }: PassageViewProps) {
     const available = allPassages();
     if (available.length === 0) return null;
     const fresh = available.filter(p => !usedIds.has(p.id));
-    return fresh.length > 0 ? fresh[0] : available[0]; // revisit if all used
+    return fresh.length > 0 ? fresh[0] : null; // never show same passage twice
   }, [allPassages, usedIds]);
 
   // Background generation when pool is low
@@ -74,6 +76,8 @@ export default function PassageView({ onWordClick }: PassageViewProps) {
   const handleNewPassage = useCallback(async () => {
     setLoading(true);
     setQuestions([]);
+    setAllDone(false);
+    setQuestionsFinished(false);
     const picked = pickNextPassage();
     if (picked) {
       if (!picked.taggedWords || picked.taggedWords.length === 0) {
@@ -82,14 +86,13 @@ export default function PassageView({ onWordClick }: PassageViewProps) {
       }
       setPassage(picked);
       setQuestions(picked.questions || []);
-      // Persist used ID
       setUsedIds(prev => { const n = new Set(prev); n.add(picked.id); return n; });
       markPassageUsed(picked.id).catch(() => {});
       setLoading(false);
       maybeGenerateInBackground();
       return;
     }
-    // Fallback to LLM
+    // No fresh seed passages — try LLM
     try {
       const generated = await generatePassage(genre, difficulty);
       if (generated.text && !generated.text.includes("can't create")) {
@@ -101,8 +104,14 @@ export default function PassageView({ onWordClick }: PassageViewProps) {
         setUsedIds(prev => { const n = new Set(prev); n.add(record.id); return n; });
         markPassageUsed(record.id).catch(() => {});
         setExtraPassages(prev => [...prev, record]);
-      } else { setPassage(null); }
-    } catch { setPassage(null); }
+      } else {
+        setPassage(null);
+        setAllDone(true);
+      }
+    } catch {
+      setPassage(null);
+      setAllDone(true);
+    }
     finally { setLoading(false); }
   }, [genre, difficulty, pickNextPassage, maybeGenerateInBackground]);
 
@@ -117,6 +126,7 @@ export default function PassageView({ onWordClick }: PassageViewProps) {
       saveTestAttempt(attempt).catch(() => {});
     }
     setQuestions([]);
+    setQuestionsFinished(true);
   }, [passage, questions]);
 
   const containerStyle: React.CSSProperties = preferences
@@ -162,7 +172,29 @@ export default function PassageView({ onWordClick }: PassageViewProps) {
         </div>
       )}
 
-      {passage && questions.length === 0 && !loading && (
+      {/* Next Passage button — shown after questions are finished */}
+      {passage && questionsFinished && questions.length === 0 && (
+        <div style={{ textAlign: 'center', padding: '1.5rem' }}>
+          <p style={{ color: '#2d6a4f', fontWeight: 600, marginBottom: '0.75rem' }}>
+            Well done! Ready for another passage?
+          </p>
+          <button type="button" onClick={handleNewPassage} disabled={loading} aria-label="Next passage"
+            style={{ padding: '0.6rem 1.5rem', borderRadius: '6px', border: 'none', background: '#4a6fa5', color: '#fff', cursor: 'pointer', fontWeight: 600, fontSize: 'inherit' }}
+          >Next Passage →</button>
+        </div>
+      )}
+
+      {/* All passages used for this genre/level */}
+      {allDone && (
+        <div style={{ textAlign: 'center', padding: '2rem 1rem', color: '#555', background: '#fff3cd', borderRadius: '8px', marginTop: '1rem' }}>
+          <p style={{ fontSize: '1.1em', fontWeight: 600, margin: '0 0 0.5rem' }}>
+            🌟 You've completed all available passages for this genre and level!
+          </p>
+          <p style={{ margin: 0 }}>Try a different genre or difficulty level, or check back later for new passages.</p>
+        </div>
+      )}
+
+      {passage && questions.length === 0 && !loading && !questionsFinished && !allDone && (
         <div style={{ textAlign: 'center', padding: '1rem', color: '#888', fontStyle: 'italic' }}>No questions available for this passage yet.</div>
       )}
     </div>
