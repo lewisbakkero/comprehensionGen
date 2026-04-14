@@ -1,6 +1,6 @@
-// PassageView — reading + questions with persistent history and passage cycling
+// PassageView — reading + questions, never repeats passages, background generation
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import type { TaggedWord, Genre, DifficultyLevel, UserPreferences, ComprehensionQuestion, PassageRecord } from '../types';
 import { tagWords } from '../services/wordTagger';
 import { getPreferences } from '../services/displayPreferences';
@@ -29,70 +29,88 @@ export default function PassageView({ onWordClick }: PassageViewProps) {
   const [genre, setGenre] = useState<Genre>('fiction');
   const [difficulty, setDifficulty] = useState<DifficultyLevel>(1);
   const [preferences, setPreferences] = useState<UserPreferences | null>(null);
-  const [usedIds, setUsedIds] = useState<Set<string>>(new Set());
-  const [extraPassages, setExtraPassages] = useState<PassageRecord[]>([]);
-  const [generatingInBackground, setGeneratingInBackground] = useState(false);
   const [allDone, setAllDone] = useState(false);
   const [questionsFinished, setQuestionsFinished] = useState(false);
+  const [generatingInBackground, setGeneratingInBackground] = useState(false);
+  const extraPassagesRef = useRef<PassageRecord[]>([]);
+  const bgGeneratingRef = useRef(false);
 
-  // Load preferences and used IDs from IndexedDB on mount
   useEffect(() => {
     getPreferences().then(setPreferences).catch(() => {});
-    getUsedPassageIds().then(setUsedIds).catch(() => {});
   }, []);
 
-  const allPassages = useCallback((): PassageRecord[] => {
-    const seeds = SEED_PASSAGES.filter(p => p.genre === genre && p.difficulty === difficulty);
-    const extras = extraPassages.filter(p => p.genre === genre && p.difficulty === difficulty);
-    return [...seeds, ...extras];
-  }, [genre, difficulty, extraPassages]);
+  // Get fresh used IDs from IndexedDB every time we need them
+  const getFreshUsedIds = useCallback(async (): Promise<Set<string>> => {
+    try { return await getUsedPassageIds(); }
+    catch { return new Set(); }
+  }, []);
 
-  const pickNextPassage = useCallback((): PassageRecord | null => {
-    const available = allPassages();
-    if (available.length === 0) return null;
-    const fresh = available.filter(p => !usedIds.has(p.id));
-    return fresh.length > 0 ? fresh[0] : null; // never show same passage twice
-  }, [allPassages, usedIds]);
+  // Pick next unused passage for given genre/difficulty
+  const pickFreshPassage = useCallback(async (g: Genre, d: DifficultyLevel): Promise<PassageRecord | null> => {
+    const usedIds = await getFreshUsedIds();
+    const seeds = SEED_PASSAGES.filter(p => p.genre === g && p.difficulty === d);
+    const extras = extraPassagesRef.current.filter(p => p.genre === g && p.difficulty === d);
+    const all = [...seeds, ...extras];
+    const fresh = all.filter(p => !usedIds.has(p.id));
+    console.log(`[PassageView] pick: ${all.length} total, ${fresh.length} fresh for ${g} L${d}, used: ${usedIds.size}`);
+    return fresh.length > 0 ? fresh[0] : null;
+  }, [getFreshUsedIds]);
 
-  // Background generation when pool is low
-  const maybeGenerateInBackground = useCallback(async () => {
-    const available = allPassages();
-    const fresh = available.filter(p => !usedIds.has(p.id));
-    if (fresh.length <= 1 && !generatingInBackground) {
-      setGeneratingInBackground(true);
-      try {
-        const p = await generatePassage(genre, difficulty);
-        if (p.text && !p.text.includes("can't create")) {
-          p.taggedWords = tagWords(p);
-          const qs = await generateQuestions(p);
-          const record: PassageRecord = { ...p, questions: qs, createdAt: new Date(), completed: false, questionsAnswered: 0, questionsCorrect: 0 };
-          setExtraPassages(prev => [...prev, record]);
-        }
-      } catch { /* non-critical */ }
-      finally { setGeneratingInBackground(false); }
-    }
-  }, [genre, difficulty, allPassages, usedIds, generatingInBackground]);
+  // Count remaining fresh passages
+  const countFresh = useCallback(async (g: Genre, d: DifficultyLevel): Promise<number> => {
+    const usedIds = await getFreshUsedIds();
+    const seeds = SEED_PASSAGES.filter(p => p.genre === g && p.difficulty === d);
+    const extras = extraPassagesRef.current.filter(p => p.genre === g && p.difficulty === d);
+    return [...seeds, ...extras].filter(p => !usedIds.has(p.id)).length;
+  }, [getFreshUsedIds]);
+
+  // Background LLM generation — called when fresh count is low
+  const generateInBackground = useCallback(async (g: Genre, d: DifficultyLevel) => {
+    if (bgGeneratingRef.current) return;
+    bgGeneratingRef.current = true;
+    setGeneratingInBackground(true);
+    console.log(`[PassageView] Background generating for ${g} L${d}...`);
+    try {
+      const p = await generatePassage(g, d);
+      if (p.text && !p.text.includes("can't create")) {
+        p.taggedWords = tagWords(p);
+        const qs = await generateQuestions(p);
+        const record: PassageRecord = { ...p, questions: qs, createdAt: new Date(), completed: false, questionsAnswered: 0, questionsCorrect: 0 };
+        extraPassagesRef.current = [...extraPassagesRef.current, record];
+        console.log(`[PassageView] Background generated: ${record.id}`);
+      }
+    } catch { /* non-critical */ }
+    finally { bgGeneratingRef.current = false; setGeneratingInBackground(false); }
+  }, []);
 
   const handleNewPassage = useCallback(async () => {
     setLoading(true);
     setQuestions([]);
     setAllDone(false);
     setQuestionsFinished(false);
-    const picked = pickNextPassage();
+
+    const picked = await pickFreshPassage(genre, difficulty);
     if (picked) {
+      // Tag words if needed
       if (!picked.taggedWords || picked.taggedWords.length === 0) {
         try { picked.taggedWords = tagWords({ id: picked.id, text: picked.text, genre: picked.genre, difficulty: picked.difficulty, theme: picked.theme, paragraphs: picked.paragraphs, taggedWords: [] }); }
         catch { picked.taggedWords = []; }
       }
       setPassage(picked);
       setQuestions(picked.questions || []);
-      setUsedIds(prev => { const n = new Set(prev); n.add(picked.id); return n; });
-      markPassageUsed(picked.id).catch(() => {});
+      await markPassageUsed(picked.id);
       setLoading(false);
-      maybeGenerateInBackground();
+
+      // Check if this was the last fresh one — generate more in background
+      const remaining = await countFresh(genre, difficulty);
+      if (remaining <= 1) {
+        generateInBackground(genre, difficulty);
+      }
       return;
     }
-    // No fresh seed passages — try LLM
+
+    // No fresh passages available — try LLM directly
+    console.log('[PassageView] No fresh passages, trying LLM...');
     try {
       const generated = await generatePassage(genre, difficulty);
       if (generated.text && !generated.text.includes("can't create")) {
@@ -101,9 +119,8 @@ export default function PassageView({ onWordClick }: PassageViewProps) {
         const record: PassageRecord = { ...generated, questions: qs, createdAt: new Date(), completed: false, questionsAnswered: 0, questionsCorrect: 0 };
         setPassage(record);
         setQuestions(qs);
-        setUsedIds(prev => { const n = new Set(prev); n.add(record.id); return n; });
-        markPassageUsed(record.id).catch(() => {});
-        setExtraPassages(prev => [...prev, record]);
+        await markPassageUsed(record.id);
+        extraPassagesRef.current = [...extraPassagesRef.current, record];
       } else {
         setPassage(null);
         setAllDone(true);
@@ -113,9 +130,8 @@ export default function PassageView({ onWordClick }: PassageViewProps) {
       setAllDone(true);
     }
     finally { setLoading(false); }
-  }, [genre, difficulty, pickNextPassage, maybeGenerateInBackground]);
+  }, [genre, difficulty, pickFreshPassage, countFresh, generateInBackground]);
 
-  // Save test results to history when questions are completed
   const handleQuestionsComplete = useCallback((results: QuestionResult[]) => {
     if (passage && questions.length > 0) {
       const attempt = buildTestAttempt(
@@ -127,7 +143,10 @@ export default function PassageView({ onWordClick }: PassageViewProps) {
     }
     setQuestions([]);
     setQuestionsFinished(true);
-  }, [passage, questions]);
+
+    // Pre-generate next passage in background
+    generateInBackground(genre, difficulty);
+  }, [passage, questions, genre, difficulty, generateInBackground]);
 
   const containerStyle: React.CSSProperties = preferences
     ? { fontFamily: preferences.fontFamily, fontSize: `${preferences.fontSize}px`, lineHeight: preferences.lineSpacing, backgroundColor: preferences.backgroundColor, padding: '1.5rem', maxWidth: '720px', margin: '0 auto' }
@@ -135,6 +154,7 @@ export default function PassageView({ onWordClick }: PassageViewProps) {
 
   return (
     <div style={containerStyle} role="main" aria-label="Passage reading area">
+      {/* Controls */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', alignItems: 'center', marginBottom: '1.5rem' }}>
         <label htmlFor="genre-select" style={{ fontWeight: 600 }}>Genre:</label>
         <select id="genre-select" value={genre} onChange={e => setGenre(e.target.value as Genre)} aria-label="Select passage genre"
@@ -151,11 +171,11 @@ export default function PassageView({ onWordClick }: PassageViewProps) {
         </fieldset>
         <button type="button" onClick={handleNewPassage} disabled={loading} aria-label="Generate a new passage"
           style={{ padding: '0.5rem 1.2rem', borderRadius: '6px', border: 'none', background: '#4a6fa5', color: '#fff', cursor: loading ? 'wait' : 'pointer', fontWeight: 600, opacity: loading ? 0.7 : 1 }}
-        >{loading ? 'Loading…' : 'New Passage'}</button>
+        >{loading ? 'Loading…' : passage ? 'New Passage' : 'Start Reading'}</button>
         {generatingInBackground && <span style={{ fontSize: '0.8em', color: '#888' }}>✨ Preparing more…</span>}
       </div>
 
-      {!passage && !loading && <p style={{ textAlign: 'center', color: '#666', marginTop: '3rem' }}>Choose a genre and level, then press "New Passage" to start reading.</p>}
+      {!passage && !loading && !allDone && <p style={{ textAlign: 'center', color: '#666', marginTop: '3rem' }}>Choose a genre and level, then press "Start Reading" to begin.</p>}
       {loading && !passage && <p style={{ textAlign: 'center', color: '#666', marginTop: '3rem' }}>Loading passage…</p>}
 
       {passage && (
@@ -172,24 +192,18 @@ export default function PassageView({ onWordClick }: PassageViewProps) {
         </div>
       )}
 
-      {/* Next Passage button — shown after questions are finished */}
       {passage && questionsFinished && questions.length === 0 && (
         <div style={{ textAlign: 'center', padding: '1.5rem' }}>
-          <p style={{ color: '#2d6a4f', fontWeight: 600, marginBottom: '0.75rem' }}>
-            Well done! Ready for another passage?
-          </p>
+          <p style={{ color: '#2d6a4f', fontWeight: 600, marginBottom: '0.75rem' }}>Well done! Ready for another passage?</p>
           <button type="button" onClick={handleNewPassage} disabled={loading} aria-label="Next passage"
             style={{ padding: '0.6rem 1.5rem', borderRadius: '6px', border: 'none', background: '#4a6fa5', color: '#fff', cursor: 'pointer', fontWeight: 600, fontSize: 'inherit' }}
           >Next Passage →</button>
         </div>
       )}
 
-      {/* All passages used for this genre/level */}
       {allDone && (
         <div style={{ textAlign: 'center', padding: '2rem 1rem', color: '#555', background: '#fff3cd', borderRadius: '8px', marginTop: '1rem' }}>
-          <p style={{ fontSize: '1.1em', fontWeight: 600, margin: '0 0 0.5rem' }}>
-            🌟 You've completed all available passages for this genre and level!
-          </p>
+          <p style={{ fontSize: '1.1em', fontWeight: 600, margin: '0 0 0.5rem' }}>🌟 You've completed all available passages for this genre and level!</p>
           <p style={{ margin: 0 }}>Try a different genre or difficulty level, or check back later for new passages.</p>
         </div>
       )}

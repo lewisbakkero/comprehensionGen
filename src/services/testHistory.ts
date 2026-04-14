@@ -54,10 +54,16 @@ export async function getAllTestAttempts(): Promise<TestAttempt[]> {
 
 export async function getUsedPassageIds(): Promise<Set<string>> {
   try {
+    // Derive from both the explicit used list AND the test history
     const db = await getDB();
     const record = await db.get('preferences', USED_PASSAGES_KEY);
-    const ids = (record?.value as string[]) ?? [];
-    return new Set(ids);
+    const explicitIds = (record?.value as string[]) ?? [];
+    
+    // Also get IDs from test history as a fallback
+    const history = await getHistoryArray();
+    const historyIds = history.map(a => a.passageId);
+    
+    return new Set([...explicitIds, ...historyIds]);
   } catch { return new Set(); }
 }
 
