@@ -8,16 +8,18 @@ import WordBankView from './components/WordBankView';
 import ProgressView from './components/ProgressView';
 import SettingsPanel from './components/SettingsPanel';
 import WordExerciseView from './components/WordExerciseView';
+import HistoryView from './components/HistoryView';
 
-type Tab = 'read' | 'wordbank' | 'progress' | 'settings';
+type Tab = 'read' | 'history' | 'wordbank' | 'progress' | 'settings';
 
 const TAB_LABELS: Record<Tab, string> = {
   read: '📖 Read',
-  wordbank: '📚 Word Bank',
+  history: '📋 History',
+  wordbank: '📚 Words',
   progress: '🌻 Progress',
   settings: '⚙️ Settings',
 };
-const TAB_ORDER: Tab[] = ['read', 'wordbank', 'progress', 'settings'];
+const TAB_ORDER: Tab[] = ['read', 'history', 'wordbank', 'progress', 'settings'];
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>('read');
@@ -113,6 +115,9 @@ export default function App() {
 
       <div id="panel-read" role="tabpanel" hidden={activeTab !== 'read'}>
         {activeTab === 'read' && <PassageView onWordClick={handleWordClick} />}
+      </div>
+      <div id="panel-history" role="tabpanel" hidden={activeTab !== 'history'}>
+        {activeTab === 'history' && <HistoryView />}
       </div>
       <div id="panel-wordbank" role="tabpanel" hidden={activeTab !== 'wordbank'}>
         {activeTab === 'wordbank' && <WordBankView onReviewWord={handleWordClick} />}

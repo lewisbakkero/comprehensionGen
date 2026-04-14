@@ -18,6 +18,9 @@ vi.mock('./components/PassageView', () => ({
 vi.mock('./components/WordBankView', () => ({
   default: () => <div data-testid="wordbank-view">WordBank</div>,
 }));
+vi.mock('./components/HistoryView', () => ({
+  default: () => <div data-testid="history-view">History</div>,
+}));
 vi.mock('./components/ProgressView', () => ({
   default: () => <div data-testid="progress-view">Progress</div>,
 }));
@@ -35,7 +38,8 @@ describe('App shell', () => {
     render(<App />);
     await waitFor(() => {
       expect(screen.getByRole('tab', { name: /read/i })).toBeInTheDocument();
-      expect(screen.getByRole('tab', { name: /word bank/i })).toBeInTheDocument();
+      expect(screen.getByRole('tab', { name: /history/i })).toBeInTheDocument();
+      expect(screen.getByRole('tab', { name: /words/i })).toBeInTheDocument();
       expect(screen.getByRole('tab', { name: /progress/i })).toBeInTheDocument();
       expect(screen.getByRole('tab', { name: /settings/i })).toBeInTheDocument();
     });
@@ -52,7 +56,7 @@ describe('App shell', () => {
   it('switches tabs when clicked', async () => {
     render(<App />);
     await waitFor(() => screen.getByTestId('passage-view'));
-    fireEvent.click(screen.getByRole('tab', { name: /word bank/i }));
+    fireEvent.click(screen.getByRole('tab', { name: /words/i }));
     expect(screen.getByTestId('wordbank-view')).toBeInTheDocument();
   });
 
